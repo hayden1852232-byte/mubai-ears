@@ -6,7 +6,7 @@
 
 AI 文字模型吃不进音频波形，但能读图、读数字。这套工具把声音变成模型能理解的东西：
 
-- **耳蜗 (cochlea.py)**：照人耳耳蜗的原理，把音频变成一张梅尔频谱图 + 一份数字摘要（音高、能量、停顿、语速）。模型看图读数，就能感知说话人的语气、情绪、节奏。
+- **耳蜗 (cochlea.py)**：照人耳耳蜗的原理，把音频变成一张梅尔频谱图 + 一份数字摘要（音高、能量、停顿、节奏）。模型看图读数，就能感知说话人的语气、情绪、节奏。
 - **速记 (transcribe.py)**：本地 Whisper 转写，把语音变成带时间戳的文字。
 
 **全程本地，声音不出你的电脑。**
@@ -36,10 +36,16 @@ brew install ffmpeg
 sudo apt install ffmpeg
 ```
 
-速记依赖 **faster-whisper**，首次运行会自动下载模型权重（base 约 140MB）。国内网络可设镜像：
+图里的中文标题需要系统装有中文字体。Windows / macOS 自带；Linux 可以装：
 
 ```bash
-export HF_ENDPOINT=https://hf-mirror.com
+sudo apt install fonts-noto-cjk
+```
+
+速记依赖 **faster-whisper**，首次运行会自动下载模型权重（base 约 140MB），默认走国内镜像 hf-mirror.com。在海外想直连 Hugging Face：
+
+```bash
+export HF_ENDPOINT=https://huggingface.co
 ```
 
 ## 使用
@@ -52,7 +58,7 @@ python cochlea.py your_audio.m4a
 
 产出在 `out/<文件名>/`：
 - `listen.png`：双面板图——上面是梅尔频谱热力图，下面是基频曲线 + 能量 + 停顿标注
-- `summary.json`：数字摘要（时长、有声占比、音高范围、停顿位置、节奏估计等）
+- `summary.json`：数字摘要（时长、有声占比、音高范围、句间停顿位置、开口前/说完后的静音时长、节奏估计等）
 
 ### 速记——听见声音的内容
 
@@ -62,6 +68,8 @@ python transcribe.py your_audio.m4a [模型名]
 
 模型名默认 `base`，可选 `small` / `medium`（更准但更慢更大）。产出：
 - `out/<文件名>/transcript.json`：带时间戳的逐句转写
+
+小模型偶尔会把内置的提示词“背”进转写里（Whisper 的幻觉）。脚本会自动剔除这种回声，`prompt_echo_removed` 记着这次剔除了几处。
 
 ## 给你的 AI 用
 

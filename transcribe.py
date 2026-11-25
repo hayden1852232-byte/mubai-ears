@@ -5,12 +5,42 @@
 #   模型名默认 base(约140MB,深夜热点友好);升级听力换 small/medium,重跑自动下载。
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")  # 国内镜像,家里网络到 HF 本尊不通
 
 from faster_whisper import WhisperModel
+
+INITIAL_PROMPT = "以下是普通话的日常聊天语音,可能夹杂笑声和哼唱。"
+ECHO_MIN_LEN = 6  # 和提示词连续重合这么多字以上,才当作回声剔除
+_PUNCT = r"[，,。.！!？?、；;：:…\s]"
+
+
+def strip_prompt_echo(text, prompt=INITIAL_PROMPT, min_len=ECHO_MIN_LEN):
+    """小模型偶尔把 initial_prompt 原样"背"进转写(幻觉)。
+    把与提示词某一小句连续重合 ≥min_len 字的片段剔掉,返回 (清理后文本, 是否剔除过)。"""
+    clauses = [c for c in re.split(_PUNCT + "+", prompt) if c]
+    kept, i, removed = [], 0, False
+    while i < len(text):
+        longest = 0
+        for c in clauses:
+            j = i
+            while j < len(text) and text[i:j + 1] in c:
+                j += 1
+            longest = max(longest, j - i)
+        if longest >= min_len:
+            i += longest
+            removed = True
+        else:
+            kept.append(text[i])
+            i += 1
+    cleaned = "".join(kept)
+    if removed:
+        cleaned = re.sub(f"({_PUNCT}){_PUNCT}+", r"\1", cleaned)  # 剔除后残留的连串标点并成一个
+        cleaned = re.sub(f"^{_PUNCT}+", "", cleaned).strip()
+    return cleaned, removed
 
 
 def main():
@@ -30,22 +60,27 @@ def main():
         str(audio),
         language="zh",
         vad_filter=True,                      # 静音段跳过,配她"一小句一小句蹦"的说话习惯
-        initial_prompt="以下是普通话的日常聊天语音,可能夹杂笑声和哼唱。",
+        initial_prompt=INITIAL_PROMPT,
     )
 
     out_dir = Path(__file__).parent / "out" / audio.stem
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    lines = []
+    lines, echoes = [], 0
     for seg in segments:
-        lines.append({"start": round(seg.start, 2), "end": round(seg.end, 2), "text": seg.text.strip()})
-        print(f"[{seg.start:6.2f} → {seg.end:6.2f}] {seg.text.strip()}")
+        text, echoed = strip_prompt_echo(seg.text.strip())
+        echoes += int(echoed)
+        note = "  (已剔除提示词回声)" if echoed else ""
+        print(f"[{seg.start:6.2f} → {seg.end:6.2f}] {text}{note}")
+        if text:
+            lines.append({"start": round(seg.start, 2), "end": round(seg.end, 2), "text": text})
 
     result = {
         "model": model_name,
         "language": info.language,
         "language_probability": round(info.language_probability, 3),
         "duration": round(info.duration, 2),
+        "prompt_echo_removed": echoes,  # >0 说明这次有幻觉,读的时候多留个心
         "segments": lines,
         "text": "".join(l["text"] for l in lines),
     }

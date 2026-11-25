@@ -14,7 +14,7 @@
     python cochlea.py <音频路径>
 
 支持 webm / ogg / m4a / mp3 / wav。非 wav 先经 ffmpeg 转临时 wav 再进 librosa
-（webm/opus 尤其依赖 ffmpeg）。产物落在 ears/out/<音频文件名主干>/：
+（webm/opus 尤其依赖 ffmpeg）。产物落在脚本同目录的 out/<音频文件名主干>/：
     listen.png    —— 竖排双面板：梅尔频谱热力图 + 基频/能量曲线（停顿浅带标注）
     summary.json  —— 数字摘要（时长/有声占比/停顿/音高/能量/节奏估计…）
 """
@@ -36,8 +36,28 @@ import matplotlib.pyplot as plt
 import librosa
 import librosa.display
 
-# 中文标题字体
-matplotlib.rcParams["font.sans-serif"] = ["Microsoft YaHei"]
+# 中文标题字体：按 Windows → macOS → Linux 的常见中文字体依次找，用装了的那些
+CJK_FONTS = [
+    "Microsoft YaHei", "SimHei",                                        # Windows
+    "PingFang SC", "Hiragino Sans GB", "Heiti TC", "Arial Unicode MS",  # macOS
+    "Noto Sans CJK SC", "Noto Sans CJK JP", "Source Han Sans SC",       # Linux
+    "WenQuanYi Zen Hei", "WenQuanYi Micro Hei",
+]
+
+
+def _use_cjk_font(candidates=CJK_FONTS):
+    from matplotlib import font_manager
+    installed = {f.name for f in font_manager.fontManager.ttflist}
+    found = [name for name in candidates if name in installed]
+    if found:
+        matplotlib.rcParams["font.sans-serif"] = found + matplotlib.rcParams["font.sans-serif"]
+    else:
+        print("提示：没找到中文字体，图里的中文会显示成方框（Linux 可装 fonts-noto-cjk）。",
+              file=sys.stderr)
+    return found
+
+
+_use_cjk_font()
 matplotlib.rcParams["axes.unicode_minus"] = False
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -58,7 +78,7 @@ def _find_ffmpeg():
     exe = shutil.which("ffmpeg")
     if exe:
         return exe
-    scoop = Path("C:/Users/mh/scoop/shims/ffmpeg.exe")
+    scoop = Path.home() / "scoop" / "shims" / "ffmpeg.exe"
     if scoop.exists():
         return str(scoop)
     return None
@@ -130,7 +150,19 @@ def analyze(y: np.ndarray, sr: int) -> dict:
     thr = max(peak * 0.15, 1e-4)              # 有声阈值
     active = rms > thr
     speech_ratio = float(active.mean()) if active.size else 0.0
-    pauses = _runs_below(~active, rms_t, PAUSE_MIN_SEC)
+
+    # 停顿只算说话中间的；开口前、说完后的静音多是按下/松开录音键的空档，单独记
+    if active.any():
+        first = int(np.argmax(active))
+        last = len(active) - 1 - int(np.argmax(active[::-1]))
+        leading_silence = float(rms_t[first])
+        trailing_silence = max(duration - float(rms_t[last]), 0.0)
+        pauses = [
+            (s, e) for (s, e) in _runs_below(~active, rms_t, PAUSE_MIN_SEC)
+            if rms_t[first] < s and e < rms_t[last]
+        ]
+    else:
+        leading_silence, trailing_silence, pauses = duration, 0.0, []
 
     # 基频（音高/语调），清音为 nan
     f0, voiced_flag, _ = librosa.pyin(
@@ -160,7 +192,7 @@ def analyze(y: np.ndarray, sr: int) -> dict:
 
     # 节奏估计（语音下仅供参考）
     try:
-        tempo = librosa.beat.tempo(y=y, sr=sr)
+        tempo = librosa.feature.tempo(y=y, sr=sr)  # librosa 1.0 删了 beat.tempo
         tempo_estimate = round(float(np.atleast_1d(tempo)[0]), 1)
     except Exception:
         tempo_estimate = None
@@ -170,6 +202,8 @@ def analyze(y: np.ndarray, sr: int) -> dict:
         "speech_ratio": round(speech_ratio, 3),
         "pause_count": len(pauses),
         "pause_positions": pauses,
+        "leading_silence_sec": round(leading_silence, 2),
+        "trailing_silence_sec": round(trailing_silence, 2),
         "pitch": pitch,
         "pitch_contour": contour,
         "energy_mean": round(float(rms.mean()), 5) if rms.size else 0.0,
@@ -201,12 +235,22 @@ def render(y, sr, info: dict, name: str, out_png: Path):
     f0, f0_t = info["_f0"], info["_f0_t"]
     ax_pit.plot(f0_t, f0, color="#c0392b", linewidth=1.6, label="基频 f0")
     ax_pit.set(ylabel="基频 (Hz)", xlabel="时间 (s)")
-    ax_pit.set_ylim(0, PITCH_FMAX)
+    # 纵轴贴着实际音域，语调起伏才看得清（固定 0–500Hz 会把曲线压成一条线）
+    voiced = f0[~np.isnan(f0)]
+    if voiced.size:
+        lo, hi = float(voiced.min()), float(voiced.max())
+        pad = max((hi - lo) * 0.15, 15.0)
+        ax_pit.set_ylim(max(lo - pad, 0.0), hi + pad)
+    else:
+        ax_pit.set_ylim(0, PITCH_FMAX)
 
     ax_e = ax_pit.twinx()
     rms, rms_t = info["_rms"], info["_rms_t"]
     ax_e.fill_between(rms_t, rms, color="#2980b9", alpha=0.25, label="能量 RMS")
     ax_e.set(ylabel="能量 RMS")
+    # 基频线画在能量填充上面，别被盖住
+    ax_pit.set_zorder(ax_e.get_zorder() + 1)
+    ax_pit.patch.set_visible(False)
 
     # 停顿：两个面板都打浅色竖带
     for (s, e) in info["_pauses"]:

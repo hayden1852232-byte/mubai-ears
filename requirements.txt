@@ -2,3 +2,5 @@ librosa>=0.10
 matplotlib>=3.7
 numpy>=1.24
 faster-whisper>=1.0
+# faster-whisper 1.2.1 调用 av.open(metadata_errors=...)，PyAV 19 删了这个参数
+av<19
