@@ -128,6 +128,7 @@ body.album-open .greeting{opacity:.18}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/CopyShader.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/VignetteShader.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/EffectComposer.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/RenderPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
@@ -149,17 +150,46 @@ const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x05080b, 0.016);
 const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 200);
 const LOOK = new THREE.Vector3(0, 0.9, 0);
+const camBase = new THREE.Vector3(0, 1.8, 26);
+const rand = (a, b) => a + Math.random() * (b - a);
 
-scene.add(new THREE.AmbientLight(0xfff1dc, 0.22));
-const key = new THREE.PointLight(0xffd8a0, 1.5, 60); key.position.set(7, 8, 12); scene.add(key);
-const rim = new THREE.PointLight(0xff8a4a, 0.8, 50); rim.position.set(-9, -1, 7); scene.add(rim);
-const inner = new THREE.PointLight(0xffb347, 1.2, 14); inner.position.set(0, 0, 0); scene.add(inner);
-const top = new THREE.DirectionalLight(0xffffff, 0.45); top.position.set(2, 10, 8); scene.add(top);
+/* 暖色环境贴图：给金属球、玻璃球真实的反光和高光点 */
+function warmEnv(){
+  const env = new THREE.Scene();
+  env.add(new THREE.Mesh(new THREE.SphereGeometry(50, 32, 16), new THREE.MeshBasicMaterial({color:0x3a2814, side:THREE.BackSide})));
+  const panel = (hex, x, y, z, w, h, k) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({color:new THREE.Color(hex).multiplyScalar(k), side:THREE.DoubleSide}));
+    m.position.set(x, y, z); m.lookAt(0, 0, 0); env.add(m);
+  };
+  panel(0xffd9a0, 14, 18, 24, 20, 14, 3.4);    // 主光窗
+  panel(0xff9a4a, -26, 4, 10, 14, 22, 1.8);    // 侧面暖光
+  panel(0xfff3e0, 0, 36, 0, 26, 26, 1.5);
+  panel(0xffb860, 0, -30, 6, 40, 14, 1.0);     // 地面反上来的暖光      // 顶光
+  panel(0x7aa6ff, 22, -6, -24, 12, 8, 0.55);   // 一点冷色，增加层次
+  for (let i = 0; i < 18; i++){                // 一圈小灯，映在球上是一颗颗高光
+    const a = i / 18 * Math.PI * 2;
+    panel(i % 5 ? 0xffc46a : 0xff6a50, Math.cos(a) * 30, -4 + (i % 3) * 7, Math.sin(a) * 30, 1.4, 1.4, 5);
+  }
+  const pm = new THREE.PMREMGenerator(renderer);
+  const tex = pm.fromScene(env, 0.015).texture;
+  pm.dispose();
+  return tex;
+}
+scene.environment = warmEnv();
+
+scene.add(new THREE.AmbientLight(0xfff1dc, 0.12));
+const key = new THREE.PointLight(0xffd8a0, 1.2, 60); key.position.set(7, 8, 12); scene.add(key);
+const rim = new THREE.PointLight(0xff8a4a, 0.7, 50); rim.position.set(-9, -1, 7); scene.add(rim);
+const inner = new THREE.PointLight(0xffa040, 1.5, 12); inner.position.set(0, -0.5, 0); scene.add(inner);
+const top = new THREE.DirectionalLight(0xffffff, 0.3); top.position.set(2, 10, 8); scene.add(top);
 
 const composer = new THREE.EffectComposer(renderer);
 composer.addPass(new THREE.RenderPass(scene, camera));
-const bloom = new THREE.UnrealBloomPass(new THREE.Vector2(512, 512), 0.8, 0.45, 0.86);
+const bloom = new THREE.UnrealBloomPass(new THREE.Vector2(512, 512), 0.78, 0.5, 0.84);
 composer.addPass(bloom);
+const vignette = new THREE.ShaderPass(THREE.VignetteShader);
+vignette.uniforms.offset.value = 0.95; vignette.uniforms.darkness.value = 1.3;
+composer.addPass(vignette);
 
 function resize(){
   const w = innerWidth, h = innerHeight;
@@ -167,7 +197,8 @@ function resize(){
   composer.setSize(w, h);
   camera.aspect = w / h;
   const dist = camera.aspect < 0.8 ? 21 / Math.max(camera.aspect, 0.42) * 0.62 + 14 : 26;
-  camera.position.set(0, 1.8, dist);
+  camBase.set(0, 1.8, dist);
+  camera.position.copy(camBase);
   camera.lookAt(LOOK);
   camera.updateProjectionMatrix();
 }
@@ -177,7 +208,6 @@ const treeGroup = new THREE.Group();
 scene.add(treeGroup);
 
 /* ---------------- 粒子：树形 + 旋风 ---------------- */
-const rand = (a, b) => a + Math.random() * (b - a);
 const TREE_TOP = 6.2, TREE_H = 12.2, TREE_R = 5.3;
 function treePoint(surface){
   const u = Math.sqrt(Math.random());                 // 0 = 树尖，1 = 树底
@@ -186,6 +216,12 @@ function treePoint(surface){
   const r = surface ? rMax * rand(0.92, 1.04) : rMax * (0.55 + 0.45 * Math.sqrt(Math.random()));
   const a = Math.random() * Math.PI * 2;
   return [Math.cos(a) * r, TREE_TOP - TREE_H * u, Math.sin(a) * r];
+}
+// 越靠树心越暗，假的环境光遮蔽，让树更有体积
+function depthShade(k, i){
+  const x = k.tree[i * 3], y = k.tree[i * 3 + 1], z = k.tree[i * 3 + 2];
+  const rMax = TREE_R * Math.max(0.05, (TREE_TOP - y) / TREE_H);
+  return 0.38 + 0.62 * Math.min(1, Math.hypot(x, z) / rMax);
 }
 
 function makeKind(n, opts){
@@ -233,8 +269,7 @@ function stepKind(k, dt){
   }
 }
 
-function glowMaterial(glow, opts){
-  const m = new THREE.MeshStandardMaterial(Object.assign({color:0xffffff}, opts));
+function withGlow(m, glow){
   m.onBeforeCompile = sh => {
     sh.fragmentShader = sh.fragmentShader.replace('#include <emissivemap_fragment>',
       '#include <emissivemap_fragment>\n totalEmissiveRadiance += diffuseColor.rgb * ' + glow.toFixed(3) + ';');
@@ -242,27 +277,78 @@ function glowMaterial(glow, opts){
   return m;
 }
 function pick(list){ let r = Math.random(), acc = 0; for (const [c, w] of list){ acc += w; if (r <= acc) return c; } return list[list.length - 1][0]; }
+const tmpC = new THREE.Color();
 
-// 球
+/* 一组实例化网格：同一批粒子按材质分到几张网格里 */
+function makeSplitMesh(kind, geo, variants){
+  const typeOf = new Uint8Array(kind.n), slot = new Uint16Array(kind.n);
+  const counts = variants.map(() => 0);
+  for (let i = 0; i < kind.n; i++){ const t = pick(variants.map((v, j) => [j, v.weight])); typeOf[i] = t; slot[i] = counts[t]++; }
+  const meshes = variants.map((v, j) => {
+    const m = new THREE.InstancedMesh(geo, v.material, Math.max(1, counts[j]));
+    m.count = counts[j];
+    m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    treeGroup.add(m);
+    return m;
+  });
+  for (let i = 0; i < kind.n; i++){
+    const v = variants[typeOf[i]];
+    tmpC.setHex(pick(v.palette)).multiplyScalar(depthShade(kind, i));
+    meshes[typeOf[i]].setColorAt(slot[i], tmpC);
+  }
+  return {meshes, typeOf, slot};
+}
+
+// 球：镜面金属、亮面烤漆、磨砂金三种质感
 const N_BALL = small ? 650 : 1150;
 const balls = makeKind(N_BALL, {size: () => Math.random() < 0.08 ? rand(0.34, 0.46) : rand(0.13, 0.3)});
-const ballMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 16, 12), glowMaterial(0.1, {metalness:0.6, roughness:0.25}), N_BALL);
-const ballPalette = [[0xffcf5a,.32],[0xf2b440,.22],[0xffe39a,.16],[0xe0a032,.08],[0xd8283a,.13],[0xb81d2c,.04],[0xfff2d8,.05]];
-const tmpC = new THREE.Color();
-for (let i = 0; i < N_BALL; i++) ballMesh.setColorAt(i, tmpC.setHex(pick(ballPalette)));
-ballMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-treeGroup.add(ballMesh);
+const ballSet = makeSplitMesh(balls, new THREE.SphereGeometry(1, 28, 18), [
+  {weight:.46, material:withGlow(new THREE.MeshStandardMaterial({metalness:1, roughness:0.2, envMapIntensity:1.9}), 0.12),
+   palette:[[0xffc94d,.32],[0xf0b23c,.26],[0xffdf8a,.2],[0xe8a23a,.12],[0xf3e6cf,.1]]},
+  {weight:.34, material:withGlow(new THREE.MeshPhysicalMaterial({metalness:0.1, roughness:0.3, clearcoat:1, clearcoatRoughness:0.05, envMapIntensity:1.4}), 0.06),
+   palette:[[0xc4161c,.36],[0xa50f1a,.18],[0xe0393c,.14],[0xf6efe3,.16],[0x7a0c1e,.08],[0x0f5a3c,.08]]},
+  {weight:.20, material:withGlow(new THREE.MeshStandardMaterial({metalness:0.85, roughness:0.5, envMapIntensity:1.5}), 0.1),
+   palette:[[0xd9a441,.5],[0xe8cf9a,.3],[0xb3202a,.2]]}
+]);
 
-// 小方块礼物
-const N_CUBE = small ? 300 : 560;
-const cubes = makeKind(N_CUBE, {size: () => rand(0.12, 0.25)});
+// 礼物盒：带金色丝带
+function ribbonTexture(){
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d');
+  g.fillStyle = '#000'; g.fillRect(0, 0, 128, 128);
+  g.fillStyle = '#fff'; g.fillRect(53, 0, 22, 128); g.fillRect(0, 53, 128, 22);
+  g.fillStyle = '#888'; g.fillRect(56, 0, 2, 128); g.fillRect(70, 0, 2, 128); g.fillRect(0, 56, 128, 2); g.fillRect(0, 70, 128, 2);
+  const t = new THREE.CanvasTexture(c); t.anisotropy = 4; return t;
+}
+const giftMat = new THREE.MeshStandardMaterial({map:ribbonTexture(), metalness:0.25, roughness:0.5, envMapIntensity:1});
+giftMat.onBeforeCompile = sh => {
+  sh.fragmentShader = sh.fragmentShader
+    .replace('#include <map_fragment>', 'float rib = texture2D( map, vUv ).r;')
+    .replace('#include <color_fragment>', 'diffuseColor.rgb = mix( vColor, vec3( 1.0, 0.78, 0.38 ), rib );')
+    .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n roughnessFactor = mix( roughnessFactor, 0.2, rib );')
+    .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\n metalnessFactor = mix( metalnessFactor, 0.9, rib );')
+    .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n totalEmissiveRadiance += diffuseColor.rgb * 0.04;');
+};
+const N_CUBE = small ? 260 : 480;
+const cubes = makeKind(N_CUBE, {size: () => rand(0.13, 0.26)});
 const cubeRot = new Float32Array(N_CUBE * 4);
 for (let i = 0; i < N_CUBE; i++){ cubeRot.set([rand(0, 6.3), rand(0, 6.3), rand(0, 6.3), rand(0.3, 1.6)], i * 4); }
-const cubeMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1.5, 1.5, 1.5), glowMaterial(0.06, {metalness:0.3, roughness:0.45}), N_CUBE);
-const cubePalette = [[0x2f8a62,.3],[0x46a37c,.2],[0x1e6248,.14],[0xe8b04a,.26],[0xf6d27a,.1]];
-for (let i = 0; i < N_CUBE; i++) cubeMesh.setColorAt(i, tmpC.setHex(pick(cubePalette)));
-cubeMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-treeGroup.add(cubeMesh);
+const cubeSet = makeSplitMesh(cubes, new THREE.BoxGeometry(1.5, 1.5, 1.5), [
+  {weight:1, material:giftMat, palette:[[0x1f6b4a,.34],[0x2f8a62,.18],[0xb01e28,.24],[0xf1e6cf,.12],[0x16324f,.12]]}
+]);
+
+// 珍珠串：两条螺旋绕树，散开时也一起飞
+const N_BEAD = small ? 360 : 640;
+const beads = makeKind(N_BEAD, {size: () => rand(0.05, 0.07), place: (i, n) => {
+  const strand = i % 2, k = (i >> 1) / (n >> 1), u = 0.05 + 0.95 * Math.sqrt(k);
+  const a = u * Math.PI * 2 * 5 + strand * Math.PI;
+  const r = TREE_R * u * 0.98 + 0.12;
+  return [Math.cos(a) * r, TREE_TOP - TREE_H * u - 0.12 * Math.sin(a * 6), Math.sin(a) * r];
+}});
+const beadSet = makeSplitMesh(beads, new THREE.SphereGeometry(1, 10, 8), [
+  {weight:1, material:new THREE.MeshStandardMaterial({metalness:0.9, roughness:0.18, envMapIntensity:1.6}), palette:[[0xffe6b0,.7],[0xfff4e0,.3]]}
+]);
+for (let i = 0; i < N_BEAD; i++) beadSet.meshes[0].setColorAt(beadSet.slot[i], tmpC.setHex(0xffe6b0));
 
 // 闪烁的灯（沿螺旋彩带 + 少量大光斑）
 const N_LIGHT = small ? 180 : 300;
@@ -308,6 +394,32 @@ const lightMat = new THREE.ShaderMaterial({
 });
 treeGroup.add(new THREE.Points(lightGeo, lightMat));
 
+function pointCloud(positions, colors, sizes, phases, material){
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(positions, 3).setUsage(THREE.DynamicDrawUsage));
+  g.setAttribute('aColor', new THREE.BufferAttribute(colors, 3));
+  g.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1).setUsage(THREE.DynamicDrawUsage));
+  g.setAttribute('aPhase', new THREE.BufferAttribute(phases, 1));
+  return new THREE.Points(g, material);
+}
+
+// 树心暖光：让树从里面透出光来
+const core = pointCloud(new Float32Array([0, -0.6, 0]), new Float32Array([0.42, 0.2, 0.06]), new Float32Array([62]), new Float32Array([0.1]), lightMat);
+core.frustumCulled = false;
+treeGroup.add(core);
+
+// 地面光晕
+function floorTexture(){
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const g = c.getContext('2d'), gr = g.createRadialGradient(128, 128, 0, 128, 128, 128);
+  gr.addColorStop(0, 'rgba(255,190,110,1)'); gr.addColorStop(0.35, 'rgba(255,150,60,.35)'); gr.addColorStop(1, 'rgba(255,120,40,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 256, 256);
+  return new THREE.CanvasTexture(c);
+}
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(22, 22), new THREE.MeshBasicMaterial({map:floorTexture(), transparent:true, opacity:0.5, depthWrite:false, blending:THREE.AdditiveBlending, fog:false}));
+floor.rotation.x = -Math.PI / 2; floor.position.y = -6.5;
+scene.add(floor);
+
 // 雪
 const N_SNOW = small ? 700 : 1500;
 const snowPos = new Float32Array(N_SNOW * 3), snowVel = new Float32Array(N_SNOW);
@@ -317,13 +429,34 @@ for (let i = 0; i < N_SNOW; i++){
   snowVel[i] = rand(0.4, 1.3); snowCol.set([0.85, 0.88, 0.95], i * 3);
   snowPhase[i] = Math.random(); snowSize[i] = rand(0.3, 0.8);
 }
-const snowGeo = new THREE.BufferGeometry();
-snowGeo.setAttribute('position', new THREE.BufferAttribute(snowPos, 3).setUsage(THREE.DynamicDrawUsage));
-snowGeo.setAttribute('aColor', new THREE.BufferAttribute(snowCol, 3));
-snowGeo.setAttribute('aPhase', new THREE.BufferAttribute(snowPhase, 1));
-snowGeo.setAttribute('aSize', new THREE.BufferAttribute(snowSize, 1));
 const snowMat = lightMat.clone(); snowMat.uniforms = {uTime:lightMat.uniforms.uTime, uPR:lightMat.uniforms.uPR};
-scene.add(new THREE.Points(snowGeo, snowMat));
+const snow = pointCloud(snowPos, snowCol, snowSize, snowPhase, snowMat);
+const snowGeo = snow.geometry;
+scene.add(snow);
+
+// 前景失焦光斑：离镜头很近、很虚，拉出景深
+const N_BOKEH = small ? 16 : 30;
+const bokehPos = new Float32Array(N_BOKEH * 3), bokehCol = new Float32Array(N_BOKEH * 3), bokehSize = new Float32Array(N_BOKEH), bokehPhase = new Float32Array(N_BOKEH);
+for (let i = 0; i < N_BOKEH; i++){
+  bokehPos.set([rand(-15, 15), rand(-9, 11), rand(8, 17)], i * 3);
+  tmpC.setHex(pick([[0xffc46a,.55],[0xff7a5a,.2],[0xfff0d0,.15],[0x8fb8ff,.1]]));
+  bokehCol.set([tmpC.r, tmpC.g, tmpC.b], i * 3); bokehSize[i] = rand(1.6, 4.2); bokehPhase[i] = Math.random();
+}
+const bokehMat = new THREE.ShaderMaterial({
+  uniforms:lightMat.uniforms, vertexShader:glowVS,
+  fragmentShader:`
+    varying vec3 vC; varying float vA;
+    void main(){
+      float d = length(gl_PointCoord - 0.5);
+      float disc = smoothstep(0.5, 0.44, d);
+      float rim = 0.45 + 0.55 * smoothstep(0.18, 0.47, d);
+      gl_FragColor = vec4(vC * disc * rim * 0.16 * (0.6 + 0.4 * vA), disc * 0.2);
+    }`,
+  transparent:true, depthWrite:false, depthTest:false, blending:THREE.AdditiveBlending
+});
+const bokeh = pointCloud(bokehPos, bokehCol, bokehSize, bokehPhase, bokehMat);
+bokeh.frustumCulled = false;
+scene.add(bokeh);
 
 // 星星
 const starShape = new THREE.Shape();
@@ -331,22 +464,37 @@ for (let i = 0; i < 10; i++){
   const r = i % 2 ? 0.36 : 0.85, a = Math.PI / 2 + i * Math.PI / 5;
   i ? starShape.lineTo(Math.cos(a) * r, Math.sin(a) * r) : starShape.moveTo(Math.cos(a) * r, Math.sin(a) * r);
 }
-const starGeo = new THREE.ExtrudeGeometry(starShape, {depth:0.22, bevelEnabled:true, bevelThickness:0.08, bevelSize:0.06, bevelSegments:2});
+const starGeo = new THREE.ExtrudeGeometry(starShape, {depth:0.22, bevelEnabled:true, bevelThickness:0.1, bevelSize:0.07, bevelSegments:3});
 starGeo.center();
-const star = new THREE.Mesh(starGeo, new THREE.MeshStandardMaterial({color:0xffd970, emissive:0xffc040, emissiveIntensity:1.2, metalness:0.4, roughness:0.3}));
+const star = new THREE.Mesh(starGeo, new THREE.MeshStandardMaterial({color:0xffd970, emissive:0xffb830, emissiveIntensity:0.9, metalness:0.9, roughness:0.18, envMapIntensity:1.5}));
 treeGroup.add(star);
-const haloGeo = new THREE.BufferGeometry();
-haloGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3), 3));
-haloGeo.setAttribute('aColor', new THREE.BufferAttribute(new Float32Array([1, .82, .45]), 3));
-haloGeo.setAttribute('aPhase', new THREE.BufferAttribute(new Float32Array([0.2]), 1));
-haloGeo.setAttribute('aSize', new THREE.BufferAttribute(new Float32Array([11]), 1));
-const halo = new THREE.Points(haloGeo, lightMat);
+// 星芒：十字光 + 斜向细光 + 柔光
+const flareMat = new THREE.ShaderMaterial({
+  uniforms:{uTime:lightMat.uniforms.uTime, uPR:lightMat.uniforms.uPR},
+  vertexShader:glowVS,
+  fragmentShader:`
+    uniform float uTime;
+    varying vec3 vC; varying float vA;
+    void main(){
+      vec2 c = gl_PointCoord - 0.5;
+      float a = uTime * 0.15, s = sin(a), co = cos(a);
+      vec2 p = vec2(co * c.x - s * c.y, s * c.x + co * c.y);
+      vec2 q = vec2(p.x + p.y, p.x - p.y) * 0.7071;
+      float rays = exp(-abs(p.x) * 70.0) * exp(-abs(p.y) * 4.5) + exp(-abs(p.y) * 70.0) * exp(-abs(p.x) * 4.5);
+      rays += 0.45 * (exp(-abs(q.x) * 90.0) * exp(-abs(q.y) * 8.0) + exp(-abs(q.y) * 90.0) * exp(-abs(q.x) * 8.0));
+      float glow = exp(-length(c) * 11.0);
+      float v = (rays + glow) * smoothstep(0.5, 0.3, length(c));
+      gl_FragColor = vec4(vC * v * (0.75 + 0.35 * vA), v);
+    }`,
+  transparent:true, depthWrite:false, blending:THREE.AdditiveBlending
+});
+const halo = pointCloud(new Float32Array(3), new Float32Array([1, .84, .52]), new Float32Array([30]), new Float32Array([0.2]), flareMat);
 star.add(halo);
 
 /* ---------------- 照片 ---------------- */
 const photos = [];   // {id, mesh, tex, h, ang, rOff, tree:[x,y,z], focus, sample}
 const PHOTO_W = 1.3, PHOTO_H = 1.55;
-const photoGeo = new THREE.PlaneGeometry(PHOTO_W, PHOTO_H);
+const photoGeo = new THREE.BoxGeometry(PHOTO_W, PHOTO_H, 0.035);
 let fontReady = document.fonts ? document.fonts.load('48px "Great Vibes"').catch(() => {}) : Promise.resolve();
 
 function polaroid(drawPhoto, caption){
@@ -390,15 +538,16 @@ function layoutPhotos(){
   });
 }
 function addPhotoMesh(tex, rec){
-  const mat = new THREE.MeshBasicMaterial({map:tex, color:0xa8a8a8, side:THREE.DoubleSide, fog:false, transparent:true});
-  const mesh = new THREE.Mesh(photoGeo, mat);
-  const p = Object.assign({mesh, tex, focus:0, s:spreadTarget, h:0.5, ang:0, rOff:1, tree:[0,0,0]}, rec);
+  const front = new THREE.MeshBasicMaterial({map:tex, color:0xa8a8a8, fog:false, transparent:true});
+  const paper = new THREE.MeshStandardMaterial({color:0xe9e0cf, roughness:0.85, metalness:0, transparent:true});
+  const mesh = new THREE.Mesh(photoGeo, [paper, paper, paper, paper, front, paper]);
+  const p = Object.assign({mesh, tex, front, paper, sway:Math.random() * 6.28, focus:0, s:spreadTarget, h:0.5, ang:0, rOff:1, tree:[0,0,0]}, rec);
   mesh.userData.photo = p;
   treeGroup.add(mesh); photos.push(p);
   return p;
 }
 function removePhoto(p){
-  treeGroup.remove(p.mesh); p.tex.dispose(); p.mesh.material.dispose();
+  treeGroup.remove(p.mesh); p.tex.dispose(); p.front.dispose(); p.paper.dispose();
   photos.splice(photos.indexOf(p), 1);
 }
 async function showSamples(){
@@ -501,6 +650,8 @@ async function deleteCurrent(){
 
 /* ---------------- 交互：鼠标 / 键盘 / 按钮 ---------------- */
 let rotAuto = 0, rotUser = 0, rotUserTarget = 0, handRot = 0, handRotTarget = 0;
+let parX = 0, parY = 0, parXT = 0, parYT = 0;
+addEventListener('pointermove', e => { if (camOn) return; parXT = e.clientX / innerWidth - 0.5; parYT = e.clientY / innerHeight - 0.5; });
 function setMode(spread){
   spreadTarget = spread ? 1 : 0;
   refreshUI();
@@ -679,6 +830,7 @@ function onResults(res){
   if (lm){
     const hx = 1 - lm[9].x;                     // 镜像：你往右，树往右
     handRotTarget = (hx - 0.5) * Math.PI * 1.3;
+    parXT = (hx - 0.5) * 0.6; parYT = lm[9].y - 0.5;
     if (lastHx !== null){
       const dt = Math.max(1, now - lastHt) / 1000;
       vx = vx * 0.5 + ((hx - lastHx) / dt) * 0.5;
@@ -712,22 +864,31 @@ function frame(now){
   handRot += (handRotTarget - handRot) * Math.min(1, dt * 3);
   treeGroup.rotation.y = rotAuto + rotUser + handRot;
   treeGroup.updateMatrixWorld();
+  parX += (parXT - parX) * Math.min(1, dt * 2.5); parY += (parYT - parY) * Math.min(1, dt * 2.5);
+  camera.position.set(camBase.x + parX * 4.5 + Math.sin(time * 0.21) * 0.35 * motion,
+                      camBase.y - parY * 4 + Math.sin(time * 0.17) * 0.25 * motion, camBase.z);
+  camera.lookAt(LOOK);
 
-  stepKind(balls, dt * motion); stepKind(cubes, dt * motion); stepKind(lights, dt * motion);
+  stepKind(balls, dt * motion); stepKind(cubes, dt * motion); stepKind(lights, dt * motion); stepKind(beads, dt * motion);
 
   for (let i = 0; i < balls.n; i++){
     const s = balls.scale[i] * balls.vis[i];
     dummy.position.fromArray(balls.pos, i * 3); dummy.rotation.set(0, 0, 0); dummy.scale.setScalar(s);
-    dummy.updateMatrix(); ballMesh.setMatrixAt(i, dummy.matrix);
+    dummy.updateMatrix(); ballSet.meshes[ballSet.typeOf[i]].setMatrixAt(ballSet.slot[i], dummy.matrix);
   }
-  ballMesh.instanceMatrix.needsUpdate = true;
+  ballSet.meshes.forEach(m => { m.instanceMatrix.needsUpdate = true; });
+  for (let i = 0; i < beads.n; i++){
+    dummy.position.fromArray(beads.pos, i * 3); dummy.rotation.set(0, 0, 0); dummy.scale.setScalar(beads.scale[i] * beads.vis[i]);
+    dummy.updateMatrix(); beadSet.meshes[0].setMatrixAt(beadSet.slot[i], dummy.matrix);
+  }
+  beadSet.meshes[0].instanceMatrix.needsUpdate = true;
   for (let i = 0; i < cubes.n; i++){
     const s = cubes.scale[i] * cubes.vis[i], sp = cubeRot[i * 4 + 3] * (0.3 + cubes.s[i] * 2);
     dummy.position.fromArray(cubes.pos, i * 3);
     dummy.rotation.set(cubeRot[i * 4] + time * sp, cubeRot[i * 4 + 1] + time * sp * 0.7, cubeRot[i * 4 + 2]);
-    dummy.scale.setScalar(s); dummy.updateMatrix(); cubeMesh.setMatrixAt(i, dummy.matrix);
+    dummy.scale.setScalar(s); dummy.updateMatrix(); cubeSet.meshes[0].setMatrixAt(cubeSet.slot[i], dummy.matrix);
   }
-  cubeMesh.instanceMatrix.needsUpdate = true;
+  cubeSet.meshes[0].instanceMatrix.needsUpdate = true;
   for (let i = 0; i < lights.n; i++) lightSize[i] = lights.scale[i] * lights.vis[i];
   lightSizeAttr.needsUpdate = true; lightGeo.attributes.position.needsUpdate = true;
   lightMat.uniforms.uTime.value = time;
@@ -740,6 +901,11 @@ function frame(now){
     snowPos[i * 3 + 1] = y;
   }
   snowGeo.attributes.position.needsUpdate = true;
+  for (let i = 0; i < N_BOKEH; i++){
+    bokehPos[i * 3] += Math.sin(time * 0.13 + i * 1.7) * dt * 0.12 * motion;
+    bokehPos[i * 3 + 1] += Math.cos(time * 0.11 + i) * dt * 0.1 * motion;
+  }
+  bokeh.geometry.attributes.position.needsUpdate = true;
 
   // 星星
   const avgS = spreadTarget ? Math.min(1, balls.s[0] * 0.5 + balls.s[1] * 0.5) : (balls.s[0] + balls.s[1]) / 2;
@@ -747,6 +913,10 @@ function frame(now){
   star.position.set(0, TREE_TOP + 0.75 + se * 3.4, 0);
   star.rotation.set(0, time * (0.6 + se * 3), 0);
   star.scale.setScalar(1 - se * 0.35);
+  core.geometry.attributes.aSize.array[0] = 62 * (1 - se * 0.75);
+  core.geometry.attributes.aSize.needsUpdate = true;
+  inner.intensity = 1.5 * (1 - se * 0.6);
+  floor.material.opacity = 0.5 * (1 - se * 0.7);
 
   // 照片
   camera.getWorldDirection(fwd);
@@ -771,10 +941,11 @@ function frame(now){
     eul.set(0, Math.atan2(bx, bz), 0); qA.setFromEuler(eul);
     qA.slerp(camLocalQ, Math.max(e, f));
     p.mesh.quaternion.copy(qA);
+    p.mesh.rotateZ(Math.sin(time * 1.1 + p.sway) * 0.07 * (1 - Math.max(e, f)));   // 挂在树上轻轻摆
     p.mesh.scale.setScalar(1 + (focusScale - 1) * f);
     p.mesh.renderOrder = f > 0.01 ? 10 : 0;
-    p.mesh.material.depthTest = f < 0.5;
-    p.mesh.material.color.setScalar(0.68 + 0.12 * f);
+    p.front.depthTest = p.paper.depthTest = f < 0.5;
+    p.front.color.setScalar(0.7 + 0.1 * f);
   });
 
   composer.render();
